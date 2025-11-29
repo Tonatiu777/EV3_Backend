@@ -1,6 +1,7 @@
 import 'dart:convert';
-import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
@@ -10,7 +11,6 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as latlng;
 
-// CAMBIA ESTA URL A LA IP DE TU API
 const String apiBaseUrl = "http://192.168.56.1:8000";
 
 void main() {
@@ -31,7 +31,6 @@ class PaquexpressApp extends StatelessWidget {
 }
 
 // ======================= LOGIN ==========================
-
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
 
@@ -128,7 +127,6 @@ class _LoginPageState extends State<LoginPage> {
 }
 
 // ======================= HOME ==========================
-
 class HomePage extends StatefulWidget {
   final int userId;
   final String fullName;
@@ -154,7 +152,8 @@ class _HomePageState extends State<HomePage> {
         });
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Error al cargar paquetes: ${resp.statusCode}")),
+          SnackBar(
+              content: Text("Error al cargar paquetes: ${resp.statusCode}")),
         );
       }
     } catch (e) {
@@ -218,8 +217,7 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-// ======================= ENTREGAR PAQUETE + MAPA ==========================
-
+// ======================= ENTREGAR PAQUETE (CON FOTO COMPATIBLE) ==========================
 class EntregaPage extends StatefulWidget {
   final int userId;
   final Map<String, dynamic> paquete;
@@ -232,23 +230,29 @@ class EntregaPage extends StatefulWidget {
 
 class _EntregaPageState extends State<EntregaPage> {
   final ImagePicker _picker = ImagePicker();
+
+  Uint8List? _imageBytes;      // FOTO EN BYTES (FUNCIONA EN WINDOWS + WEB)
   XFile? _pickedFile;
-  File? _imageFile;
+
   double? _lat;
   double? _lon;
   bool sending = false;
   String status = "Toma la foto y registra la ubicación.";
 
+  // 📸 Tomar foto compatible
   Future<void> _tomarFoto() async {
     final picked = await _picker.pickImage(source: ImageSource.camera);
     if (picked != null) {
+      final bytes = await picked.readAsBytes();
+
       setState(() {
         _pickedFile = picked;
-        _imageFile = File(picked.path);
+        _imageBytes = bytes;
       });
     }
   }
 
+  // 📍 Obtener GPS
   Future<void> _obtenerGPS() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
@@ -261,12 +265,7 @@ class _EntregaPageState extends State<EntregaPage> {
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        setState(() => status = "Permiso de ubicación denegado.");
-        return;
-      }
     }
-
     if (permission == LocationPermission.deniedForever) {
       setState(() => status = "Permiso de ubicación denegado permanentemente.");
       return;
@@ -283,8 +282,9 @@ class _EntregaPageState extends State<EntregaPage> {
     });
   }
 
+  // 🚚 Enviar entrega (Foto + GPS)
   Future<void> _entregar() async {
-    if (_pickedFile == null || _imageFile == null) {
+    if (_imageBytes == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Primero toma la foto")),
       );
@@ -312,8 +312,13 @@ class _EntregaPageState extends State<EntregaPage> {
       request.fields["latitude"] = _lat.toString();
       request.fields["longitude"] = _lon.toString();
 
+      // FOTO EN BYTES
       request.files.add(
-        await http.MultipartFile.fromPath("file", _imageFile!.path),
+        http.MultipartFile.fromBytes(
+          "file",
+          _imageBytes!,
+          filename: "evidencia.jpg",
+        ),
       );
 
       final resp = await request.send();
@@ -336,12 +341,11 @@ class _EntregaPageState extends State<EntregaPage> {
         status = "Error de conexión: $e";
       });
     } finally {
-      setState(() {
-        sending = false;
-      });
+      setState(() => sending = false);
     }
   }
 
+  // 🌍 Mostrar mapa
   Widget _buildMapa() {
     if (_lat == null || _lon == null) {
       return const Text(
@@ -358,8 +362,6 @@ class _EntregaPageState extends State<EntregaPage> {
         options: MapOptions(
           initialCenter: point,
           initialZoom: 17,
-          interactionOptions:
-              const InteractionOptions(flags: InteractiveFlag.all),
         ),
         children: [
           TileLayer(
@@ -393,7 +395,7 @@ class _EntregaPageState extends State<EntregaPage> {
       appBar: AppBar(
         title: Text("Entrega ${p["tracking_code"] ?? ""}"),
       ),
-      body: Padding(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
@@ -401,25 +403,32 @@ class _EntregaPageState extends State<EntregaPage> {
               p["destino"] ?? "",
               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
+
             const SizedBox(height: 12),
-            _imageFile == null
-                ? const Text("Sin foto")
-                : Image.file(_imageFile!, height: 180),
+
+            // FOTO (COMPATIBLE CON WEB + WINDOWS)
+            _imageBytes == null
+                ? const Text("Sin foto aún")
+                : Image.memory(_imageBytes!, height: 180),
+
             const SizedBox(height: 8),
             ElevatedButton(
               onPressed: _tomarFoto,
               child: const Text("Tomar foto"),
             ),
+
             const SizedBox(height: 8),
             ElevatedButton(
               onPressed: _obtenerGPS,
               child: const Text("Obtener GPS"),
             ),
+
             const SizedBox(height: 4),
             Text("Lat: ${_lat ?? '-'}, Lon: ${_lon ?? '-'}"),
+
             const SizedBox(height: 8),
-            // Mapa interactivo
             _buildMapa(),
+
             const SizedBox(height: 8),
             sending
                 ? const CircularProgressIndicator()
@@ -428,6 +437,7 @@ class _EntregaPageState extends State<EntregaPage> {
                     icon: const Icon(Icons.check),
                     label: const Text("Paquete entregado"),
                   ),
+
             const SizedBox(height: 8),
             Text(
               status,
